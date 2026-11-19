@@ -3,7 +3,7 @@ import multer from 'multer';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, ROOT, COVER_DIR, FILE_DIR, logActivity } from '../db.js';
+import { get, all, run, STORAGE_ROOT, COVER_DIR, FILE_DIR, logActivity } from '../db.js';
 import { requireAuth, requireRole } from '../auth.js';
 import {
   clampText, uniqueSlug, nowIso, isHttpUrl, safeFileName, httpError, toNumber, asyncRoute,
@@ -73,7 +73,7 @@ function diskPath(relPath) {
   if (!relPath) return null;
   const clean = String(relPath).replace(/^\/+/, '');
   if (clean.startsWith('covers/')) return path.join(COVER_DIR, clean.slice('covers/'.length));
-  return path.resolve(ROOT, clean.split('/').join(path.sep));
+  return path.resolve(STORAGE_ROOT, clean.split('/').join(path.sep));
 }
 
 function removeStored(relPath) {
@@ -91,7 +91,7 @@ function cleanupUploads(files) {
 }
 
 function relPathOf(file) {
-  return path.relative(ROOT, file.path).split(path.sep).join('/');
+  return path.relative(STORAGE_ROOT, file.path).split(path.sep).join('/');
 }
 
 function readFiles(req) {
@@ -111,9 +111,9 @@ async function storeCover(file) {
   return `/covers/${path.basename(file.path)}`;
 }
 
-function categoryExists(id) {
+async function categoryExists(id) {
   if (!id) return true;
-  return Boolean(db.prepare('SELECT 1 AS hit FROM categories WHERE id = ?').get(id));
+  return Boolean(await get('SELECT 1 AS hit FROM categories WHERE id = ?', id));
 }
 
 const LIST_SELECT = `
@@ -131,7 +131,7 @@ const LIST_SELECT = `
   FROM games g LEFT JOIN categories c ON c.id = g.category_id
 `;
 
-router.get('/games', (req, res) => {
+router.get('/games', asyncRoute(async (req, res) => {
   const q = clampText(req.query.q, 80);
   const category = clampText(req.query.category, 60);
   const status = clampText(req.query.status, 20);
@@ -163,53 +163,53 @@ router.get('/games', (req, res) => {
   }[sort] || 'g.created_at DESC';
 
   const sql = `${LIST_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY ${order} LIMIT 300`;
-  res.json({ games: db.prepare(sql).all(...params) });
-});
+  res.json({ games: await all(sql, ...params) });
+}));
 
-router.get('/games/:slug', (req, res) => {
-  const game = db.prepare(`${LIST_SELECT} WHERE g.slug = ?`).get(String(req.params.slug));
+router.get('/games/:slug', asyncRoute(async (req, res) => {
+  const game = await get(`${LIST_SELECT} WHERE g.slug = ?`, String(req.params.slug));
   if (!game) throw httpError(404, 'Không tìm thấy game này.');
 
-  const versions = db.prepare(`
+  const versions = await all(`
     SELECT v.id, v.version, v.notes, v.file_name, v.file_size, v.created_at,
            u.display_name AS author_name
     FROM game_versions v LEFT JOIN users u ON u.id = v.created_by
     WHERE v.game_id = ? ORDER BY v.created_at DESC
-  `).all(game.id);
+  `, game.id);
 
-  const leaderboard = db.prepare(`
+  const leaderboard = await all(`
     SELECT u.id AS user_id, u.display_name, u.username, u.avatar_color, u.avatar_path,
            MAX(s.value) AS value, COUNT(*) AS runs, MAX(s.created_at) AS last_at
     FROM scores s JOIN users u ON u.id = s.user_id
     WHERE s.game_id = ?
     GROUP BY u.id ORDER BY value DESC, last_at ASC LIMIT 10
-  `).all(game.id);
+  `, game.id);
 
-  const comments = db.prepare(`
+  const comments = await all(`
     SELECT c.id, c.body, c.created_at, u.id AS user_id, u.display_name, u.username,
            u.avatar_color, u.avatar_path
     FROM comments c LEFT JOIN users u ON u.id = c.user_id
     WHERE c.game_id = ? ORDER BY c.created_at DESC LIMIT 100
-  `).all(game.id);
+  `, game.id);
 
   const myRating = req.user
-    ? db.prepare('SELECT value FROM ratings WHERE game_id = ? AND user_id = ?').get(game.id, req.user.id)?.value ?? null
+    ? (await get('SELECT value FROM ratings WHERE game_id = ? AND user_id = ?', game.id, req.user.id))?.value ?? null
     : null;
 
   const creator = game.created_by
-    ? db.prepare('SELECT display_name FROM users WHERE id = ?').get(game.created_by)
+    ? await get('SELECT display_name FROM users WHERE id = ?', game.created_by)
     : null;
 
   const liked = req.user
-    ? Boolean(db.prepare('SELECT 1 AS hit FROM likes WHERE game_id = ? AND user_id = ?').get(game.id, req.user.id))
+    ? Boolean(await get('SELECT 1 AS hit FROM likes WHERE game_id = ? AND user_id = ?', game.id, req.user.id))
     : false;
 
   const myBest = req.user
-    ? db.prepare('SELECT MAX(value) AS value FROM scores WHERE game_id = ? AND user_id = ?').get(game.id, req.user.id).value
+    ? (await get('SELECT MAX(value) AS value FROM scores WHERE game_id = ? AND user_id = ?', game.id, req.user.id)).value
     : null;
 
   const myRuns = req.user
-    ? db.prepare('SELECT COUNT(*) AS c FROM scores WHERE game_id = ? AND user_id = ?').get(game.id, req.user.id).c
+    ? (await get('SELECT COUNT(*) AS c FROM scores WHERE game_id = ? AND user_id = ?', game.id, req.user.id)).c
     : 0;
 
   res.json({
@@ -222,7 +222,7 @@ router.get('/games/:slug', (req, res) => {
     myBest,
     myRuns,
   });
-});
+}));
 
 router.post('/games/submit', requireAuth, uploadCover.single('cover'), asyncRoute(async (req, res) => {
   const coverFile = req.file || null;
@@ -238,21 +238,21 @@ router.post('/games/submit', requireAuth, uploadCover.single('cover'), asyncRout
 
     if (title.length < 2) throw httpError(400, 'Tên game cần ít nhất 2 ký tự.');
     if (!isHttpUrl(url)) throw httpError(400, 'Link game phải là URL http/https.');
-    if (!categoryExists(categoryId)) throw httpError(400, 'Thể loại không hợp lệ.');
+    if (!(await categoryExists(categoryId))) throw httpError(400, 'Thể loại không hợp lệ.');
     if (coverUrl && !isHttpUrl(coverUrl)) throw httpError(400, 'Ảnh minh hoạ phải là URL http/https.');
     if (playUrl && !isHttpUrl(playUrl)) throw httpError(400, 'Link chơi không hợp lệ.');
     if (externalUrl && !isHttpUrl(externalUrl)) throw httpError(400, 'Link ngoài không hợp lệ.');
     const openUrl = externalUrl || (playUrl ? '' : url);
 
     const storedCover = (await storeCover(coverFile)) || coverUrl || null;
-    const slug = uniqueSlug(db, 'games', title);
+    const slug = await uniqueSlug(get, 'games', title);
     const now = nowIso();
-    const info = db.prepare(`
+    const info = await run(`
       INSERT INTO games (slug, title, tagline, description, category_id, status, version,
         cover_url, play_url, file_path, file_name, file_size, external_url, downloads,
         created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 'in_progress', '1.0', ?, ?, NULL, NULL, NULL, ?, 0, ?, ?, ?)
-    `).run(
+    `,
       slug, title, tagline, description, categoryId,
       storedCover,
       playUrl || null,
@@ -260,8 +260,8 @@ router.post('/games/submit', requireAuth, uploadCover.single('cover'), asyncRout
       req.user.id, now, now,
     );
 
-    const game = db.prepare(`${LIST_SELECT} WHERE g.id = ?`).get(Number(info.lastInsertRowid));
-    logActivity({ userId: req.user.id, gameId: game.id, type: 'game_added', message: `đã đăng game ${title}` });
+    const game = await get(`${LIST_SELECT} WHERE g.id = ?`, info.lastInsertRowid);
+    await logActivity({ userId: req.user.id, gameId: game.id, type: 'game_added', message: `đã đăng game ${title}` });
     res.status(201).json({ game });
   } catch (err) {
     if (coverFile) fs.rm(coverFile.path, { force: true }, () => {});
@@ -269,8 +269,8 @@ router.post('/games/submit', requireAuth, uploadCover.single('cover'), asyncRout
   }
 }));
 
-router.post('/games/:id/rating', requireAuth, (req, res) => {
-  const game = db.prepare('SELECT id, title FROM games WHERE id = ?').get(Number(req.params.id));
+router.post('/games/:id/rating', requireAuth, asyncRoute(async (req, res) => {
+  const game = await get('SELECT id, title FROM games WHERE id = ?', Number(req.params.id));
   if (!game) throw httpError(404, 'Không tìm thấy game này.');
 
   const value = toNumber(req.body?.value);
@@ -279,18 +279,18 @@ router.post('/games/:id/rating', requireAuth, (req, res) => {
   }
 
   const now = nowIso();
-  db.prepare(`
+  await run(`
     INSERT INTO ratings (game_id, user_id, value, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (game_id, user_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).run(game.id, req.user.id, value, now, now);
+  `, game.id, req.user.id, value, now, now);
 
-  const stats = db.prepare(`
+  const stats = await get(`
     SELECT ROUND(AVG(value), 1) AS avg, COUNT(*) AS count FROM ratings WHERE game_id = ?
-  `).get(game.id);
+  `, game.id);
 
   res.json({ myRating: value, avg: stats.avg, count: stats.count });
-});
+}));
 
 router.post('/games', requireRole('admin', 'editor'),
   upload.fields([{ name: 'cover', maxCount: 1 }, { name: 'file', maxCount: 1 }]),
@@ -308,22 +308,22 @@ router.post('/games', requireRole('admin', 'editor'),
       const coverUrl = clampText(req.body.cover_url, 500);
 
       if (title.length < 2) throw httpError(400, 'Tên game cần ít nhất 2 ký tự.');
-      if (!categoryExists(categoryId)) throw httpError(400, 'Thể loại không hợp lệ.');
+      if (!(await categoryExists(categoryId))) throw httpError(400, 'Thể loại không hợp lệ.');
       if (playUrl && !isHttpUrl(playUrl)) throw httpError(400, 'Link chơi phải là URL http/https.');
       if (externalUrl && !isHttpUrl(externalUrl)) throw httpError(400, 'Link tải ngoài phải là URL http/https.');
       if (coverUrl && !isHttpUrl(coverUrl)) throw httpError(400, 'Ảnh bìa từ link phải là URL http/https.');
 
       const { cover, gameFile } = readFiles(req);
       const storedCover = (await storeCover(cover)) || coverUrl || null;
-      const slug = uniqueSlug(db, 'games', title);
+      const slug = await uniqueSlug(get, 'games', title);
       const now = nowIso();
 
-      const info = db.prepare(`
+      const info = await run(`
         INSERT INTO games (slug, title, tagline, description, category_id, status, version,
           cover_url, play_url, file_path, file_name, file_size, external_url, downloads,
           created_by, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-      `).run(
+      `,
         slug, title, tagline, description, categoryId, status, version,
         storedCover,
         playUrl || null,
@@ -334,8 +334,8 @@ router.post('/games', requireRole('admin', 'editor'),
         req.user.id, now, now,
       );
 
-      const game = db.prepare(`${LIST_SELECT} WHERE g.id = ?`).get(Number(info.lastInsertRowid));
-      logActivity({ userId: req.user.id, gameId: game.id, type: 'game_added', message: `đã thêm game ${title}` });
+      const game = await get(`${LIST_SELECT} WHERE g.id = ?`, info.lastInsertRowid);
+      await logActivity({ userId: req.user.id, gameId: game.id, type: 'game_added', message: `đã thêm game ${title}` });
       res.status(201).json({ game });
     } catch (err) {
       cleanupUploads(files);
@@ -348,7 +348,7 @@ router.patch('/games/:id', requireRole('admin', 'editor'),
   asyncRoute(async (req, res) => {
     const files = req.files || {};
     try {
-      const game = db.prepare('SELECT * FROM games WHERE id = ?').get(Number(req.params.id));
+      const game = await get('SELECT * FROM games WHERE id = ?', Number(req.params.id));
       if (!game) throw httpError(404, 'Không tìm thấy game này.');
 
       const updates = {};
@@ -368,7 +368,7 @@ router.patch('/games/:id', requireRole('admin', 'editor'),
       if (has('version')) updates.version = clampText(req.body.version, 24) || '1.0';
       if (has('category_id')) {
         const categoryId = toNumber(req.body.category_id);
-        if (!categoryExists(categoryId)) throw httpError(400, 'Thể loại không hợp lệ.');
+        if (!(await categoryExists(categoryId))) throw httpError(400, 'Thể loại không hợp lệ.');
         updates.category_id = categoryId;
       }
       if (has('play_url')) {
@@ -409,8 +409,8 @@ router.patch('/games/:id', requireRole('admin', 'editor'),
 
       const keys = Object.keys(updates);
       const values = keys.map((key) => updates[key]);
-      db.prepare(`UPDATE games SET ${keys.map((key) => `${key} = ?`).join(', ')} WHERE id = ?`)
-        .run(...values, game.id);
+      await run(`UPDATE games SET ${keys.map((key) => `${key} = ?`).join(', ')} WHERE id = ?`,
+        ...values, game.id);
 
       if (cover && game.cover_url) removeStored(game.cover_url.replace(/^\//, ''));
       if (!cover && requestedCoverUrl && game.cover_url && game.cover_url !== requestedCoverUrl && game.cover_url.startsWith('/covers/')) {
@@ -418,9 +418,9 @@ router.patch('/games/:id', requireRole('admin', 'editor'),
       }
       if ((gameFile || req.body.clear_file === '1') && game.file_path) removeStored(game.file_path);
 
-      const fresh = db.prepare(`${LIST_SELECT} WHERE g.id = ?`).get(game.id);
+      const fresh = await get(`${LIST_SELECT} WHERE g.id = ?`, game.id);
       const versionChanged = updates.version && updates.version !== game.version;
-      logActivity({
+      await logActivity({
         userId: req.user.id,
         gameId: game.id,
         type: versionChanged ? 'version' : 'edit',
@@ -435,51 +435,51 @@ router.patch('/games/:id', requireRole('admin', 'editor'),
     }
   }));
 
-router.delete('/games/:id', requireRole('admin'), (req, res) => {
-  const game = db.prepare('SELECT * FROM games WHERE id = ?').get(Number(req.params.id));
+router.delete('/games/:id', requireRole('admin'), asyncRoute(async (req, res) => {
+  const game = await get('SELECT * FROM games WHERE id = ?', Number(req.params.id));
   if (!game) throw httpError(404, 'Không tìm thấy game này.');
 
-  const versionFiles = db.prepare('SELECT file_path FROM game_versions WHERE game_id = ?').all(game.id);
-  db.prepare('DELETE FROM games WHERE id = ?').run(game.id);
+  const versionFiles = await all('SELECT file_path FROM game_versions WHERE game_id = ?', game.id);
+  await run('DELETE FROM games WHERE id = ?', game.id);
 
   removeStored(game.cover_url?.replace(/^\//, ''));
   removeStored(game.file_path);
   for (const row of versionFiles) removeStored(row.file_path);
 
-  logActivity({ userId: req.user.id, type: 'delete', message: `đã xoá game ${game.title}` });
+  await logActivity({ userId: req.user.id, type: 'delete', message: `đã xoá game ${game.title}` });
   res.json({ ok: true });
-});
+}));
 
-router.post('/games/:id/like', requireAuth, (req, res) => {
-  const game = db.prepare('SELECT id, title FROM games WHERE id = ?').get(Number(req.params.id));
+router.post('/games/:id/like', requireAuth, asyncRoute(async (req, res) => {
+  const game = await get('SELECT id, title FROM games WHERE id = ?', Number(req.params.id));
   if (!game) throw httpError(404, 'Không tìm thấy game này.');
 
-  const existing = db.prepare('SELECT 1 AS hit FROM likes WHERE game_id = ? AND user_id = ?').get(game.id, req.user.id);
+  const existing = await get('SELECT 1 AS hit FROM likes WHERE game_id = ? AND user_id = ?', game.id, req.user.id);
   if (existing) {
-    db.prepare('DELETE FROM likes WHERE game_id = ? AND user_id = ?').run(game.id, req.user.id);
+    await run('DELETE FROM likes WHERE game_id = ? AND user_id = ?', game.id, req.user.id);
   } else {
-    db.prepare('INSERT INTO likes (game_id, user_id, created_at) VALUES (?, ?, ?)').run(game.id, req.user.id, nowIso());
-    logActivity({ userId: req.user.id, gameId: game.id, type: 'like', message: `đã thích ${game.title}` });
+    await run('INSERT INTO likes (game_id, user_id, created_at) VALUES (?, ?, ?)', game.id, req.user.id, nowIso());
+    await logActivity({ userId: req.user.id, gameId: game.id, type: 'like', message: `đã thích ${game.title}` });
   }
 
-  const likes = db.prepare('SELECT COUNT(*) AS c FROM likes WHERE game_id = ?').get(game.id).c;
+  const likes = (await get('SELECT COUNT(*) AS c FROM likes WHERE game_id = ?', game.id)).c;
   res.json({ liked: !existing, likes });
-});
+}));
 
-router.post('/games/:id/versions', requireRole('admin', 'editor'), uploadOne.single('file'), (req, res) => {
+router.post('/games/:id/versions', requireRole('admin', 'editor'), uploadOne.single('file'), asyncRoute(async (req, res) => {
   const file = req.file || null;
   try {
-    const game = db.prepare('SELECT id, title FROM games WHERE id = ?').get(Number(req.params.id));
+    const game = await get('SELECT id, title FROM games WHERE id = ?', Number(req.params.id));
     if (!game) throw httpError(404, 'Không tìm thấy game này.');
 
     const version = clampText(req.body.version, 24);
     const notes = clampText(req.body.notes, 3000);
     if (!version) throw httpError(400, 'Vui lòng nhập số phiên bản.');
 
-    db.prepare(`
+    await run(`
       INSERT INTO game_versions (game_id, version, notes, file_name, file_path, file_size, created_by, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `,
       game.id, version, notes,
       file ? safeFileName(file.originalname) : null,
       file ? relPathOf(file) : null,
@@ -487,8 +487,8 @@ router.post('/games/:id/versions', requireRole('admin', 'editor'), uploadOne.sin
       req.user.id, nowIso(),
     );
 
-    db.prepare('UPDATE games SET version = ?, updated_at = ? WHERE id = ?').run(version, nowIso(), game.id);
-    logActivity({
+    await run('UPDATE games SET version = ?, updated_at = ? WHERE id = ?', version, nowIso(), game.id);
+    await logActivity({
       userId: req.user.id, gameId: game.id, type: 'version',
       message: `đã cập nhật ${game.title} lên v${version}`,
     });
@@ -497,29 +497,29 @@ router.post('/games/:id/versions', requireRole('admin', 'editor'), uploadOne.sin
     if (file) fs.rm(file.path, { force: true }, () => {});
     throw err;
   }
-});
+}));
 
-router.delete('/versions/:id', requireRole('admin', 'editor'), (req, res) => {
-  const row = db.prepare(`
+router.delete('/versions/:id', requireRole('admin', 'editor'), asyncRoute(async (req, res) => {
+  const row = await get(`
     SELECT v.*, g.title AS game_title FROM game_versions v
     JOIN games g ON g.id = v.game_id WHERE v.id = ?
-  `).get(Number(req.params.id));
+  `, Number(req.params.id));
   if (!row) throw httpError(404, 'Không tìm thấy bản cập nhật này.');
 
-  db.prepare('DELETE FROM game_versions WHERE id = ?').run(row.id);
+  await run('DELETE FROM game_versions WHERE id = ?', row.id);
   removeStored(row.file_path);
-  logActivity({
+  await logActivity({
     userId: req.user.id, gameId: row.game_id, type: 'edit',
     message: `đã xoá bản v${row.version} của ${row.game_title}`,
   });
   res.json({ ok: true });
-});
+}));
 
-router.get('/download/version/:id', (req, res) => {
-  const version = db.prepare(`
+router.get('/download/version/:id', asyncRoute(async (req, res) => {
+  const version = await get(`
     SELECT v.*, g.title AS game_title FROM game_versions v
     JOIN games g ON g.id = v.game_id WHERE v.id = ?
-  `).get(Number(req.params.id));
+  `, Number(req.params.id));
   if (!version || !version.file_path) throw httpError(404, 'Bản cập nhật này không có file đính kèm.');
 
   const abs = diskPath(version.file_path);
@@ -527,10 +527,10 @@ router.get('/download/version/:id', (req, res) => {
     throw httpError(404, 'File không còn trên máy chủ.');
   }
   res.download(abs, version.file_name || path.basename(abs));
-});
+}));
 
-router.get('/download/:id', (req, res) => {
-  const game = db.prepare('SELECT * FROM games WHERE id = ?').get(Number(req.params.id));
+router.get('/download/:id', asyncRoute(async (req, res) => {
+  const game = await get('SELECT * FROM games WHERE id = ?', Number(req.params.id));
   if (!game) throw httpError(404, 'Không tìm thấy game này.');
 
   if (game.file_path) {
@@ -538,16 +538,16 @@ router.get('/download/:id', (req, res) => {
     if (!abs.startsWith(FILE_DIR + path.sep) || !fs.existsSync(abs)) {
       throw httpError(404, 'File game không còn trên máy chủ.');
     }
-    db.prepare('UPDATE games SET downloads = downloads + 1 WHERE id = ?').run(game.id);
+    await run('UPDATE games SET downloads = downloads + 1 WHERE id = ?', game.id);
     return res.download(abs, game.file_name || path.basename(abs));
   }
 
   if (game.external_url) {
-    db.prepare('UPDATE games SET downloads = downloads + 1 WHERE id = ?').run(game.id);
+    await run('UPDATE games SET downloads = downloads + 1 WHERE id = ?', game.id);
     return res.redirect(game.external_url);
   }
 
   throw httpError(404, 'Game này chưa có file hoặc link tải.');
-});
+}));
 
 export default router;

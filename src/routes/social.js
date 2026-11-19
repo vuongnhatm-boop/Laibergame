@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { get, all, run } from '../db.js';
 import { requireAuth, requireRole } from '../auth.js';
-import { clampText, nowIso, rateLimiter, httpError } from '../util.js';
+import { clampText, nowIso, rateLimiter, httpError, asyncRoute } from '../util.js';
 
 const router = Router();
 
@@ -21,12 +21,12 @@ const COMMENT_SELECT = `
   FROM comments c LEFT JOIN users u ON u.id = c.user_id
 `;
 
-function commentCount(gameId) {
-  return db.prepare('SELECT COUNT(*) AS c FROM comments WHERE game_id = ?').get(gameId).c;
+async function commentCount(gameId) {
+  return (await get('SELECT COUNT(*) AS c FROM comments WHERE game_id = ?', gameId)).c;
 }
 
-router.post('/games/:id/comments', requireAuth, (req, res) => {
-  const game = db.prepare('SELECT id, title FROM games WHERE id = ?').get(Number(req.params.id));
+router.post('/games/:id/comments', requireAuth, asyncRoute(async (req, res) => {
+  const game = await get('SELECT id, title FROM games WHERE id = ?', Number(req.params.id));
   if (!game) throw httpError(404, 'Không tìm thấy game này.');
   if (!commentLimit(`comment:${req.user.id}`)) {
     throw httpError(429, 'Bạn bình luận hơi nhanh, chờ vài phút nhé.');
@@ -35,29 +35,29 @@ router.post('/games/:id/comments', requireAuth, (req, res) => {
   const body = clampText(req.body?.body, 1000);
   if (body.length < 2) throw httpError(400, 'Bình luận cần ít nhất 2 ký tự.');
 
-  const info = db.prepare('INSERT INTO comments (game_id, user_id, body, created_at) VALUES (?, ?, ?, ?)')
-    .run(game.id, req.user.id, body, nowIso());
-  const comment = db.prepare(`${COMMENT_SELECT} WHERE c.id = ?`).get(Number(info.lastInsertRowid));
+  const info = await run('INSERT INTO comments (game_id, user_id, body, created_at) VALUES (?, ?, ?, ?)',
+    game.id, req.user.id, body, nowIso());
+  const comment = await get(`${COMMENT_SELECT} WHERE c.id = ?`, info.lastInsertRowid);
 
-  res.status(201).json({ comment, commentCount: commentCount(game.id) });
-});
+  res.status(201).json({ comment, commentCount: await commentCount(game.id) });
+}));
 
-router.delete('/comments/:id', requireAuth, (req, res) => {
-  const row = db.prepare(`
+router.delete('/comments/:id', requireAuth, asyncRoute(async (req, res) => {
+  const row = await get(`
     SELECT c.*, g.slug AS game_slug FROM comments c
     JOIN games g ON g.id = c.game_id WHERE c.id = ?
-  `).get(Number(req.params.id));
+  `, Number(req.params.id));
   if (!row) throw httpError(404, 'Không tìm thấy bình luận này.');
 
   const allowed = ['admin', 'editor'].includes(req.user.role) || row.user_id === req.user.id;
   if (!allowed) throw httpError(403, 'Bạn không có quyền xoá bình luận này.');
 
-  db.prepare('DELETE FROM comments WHERE id = ?').run(row.id);
-  res.json({ ok: true, gameSlug: row.game_slug, commentCount: commentCount(row.game_id) });
-});
+  await run('DELETE FROM comments WHERE id = ?', row.id);
+  res.json({ ok: true, gameSlug: row.game_slug, commentCount: await commentCount(row.game_id) });
+}));
 
-router.post('/games/:id/reports', requireAuth, (req, res) => {
-  const game = db.prepare('SELECT id, title FROM games WHERE id = ?').get(Number(req.params.id));
+router.post('/games/:id/reports', requireAuth, asyncRoute(async (req, res) => {
+  const game = await get('SELECT id, title FROM games WHERE id = ?', Number(req.params.id));
   if (!game) throw httpError(404, 'Không tìm thấy game này.');
   if (!reportLimit(`report:${req.user.id}`)) {
     throw httpError(429, 'Bạn đã gửi quá nhiều báo cáo, thử lại sau.');
@@ -68,19 +68,19 @@ router.post('/games/:id/reports', requireAuth, (req, res) => {
   const message = clampText(req.body?.message, 1000);
   if (message.length < 5) throw httpError(400, 'Mô tả vấn đề cần ít nhất 5 ký tự.');
 
-  db.prepare(`
+  await run(`
     INSERT INTO reports (game_id, user_id, reason, message, status, created_at)
     VALUES (?, ?, ?, ?, 'open', ?)
-  `).run(game.id, req.user.id, reason, message, nowIso());
+  `, game.id, req.user.id, reason, message, nowIso());
 
   res.status(201).json({ ok: true, gameTitle: game.title });
-});
+}));
 
-router.get('/reports', requireRole('admin', 'editor'), (req, res) => {
+router.get('/reports', requireRole('admin', 'editor'), asyncRoute(async (req, res) => {
   const status = String(req.query.status || 'open');
   const filter = ['open', 'resolved'].includes(status) ? status : null;
 
-  const rows = db.prepare(`
+  const rows = await all(`
     SELECT r.id, r.reason, r.message, r.status, r.created_at, r.resolved_at,
            g.id AS game_id, g.slug AS game_slug, g.title AS game_title,
            u.display_name AS reporter_name, u.username AS reporter_username, u.avatar_color, u.avatar_path,
@@ -91,55 +91,55 @@ router.get('/reports', requireRole('admin', 'editor'), (req, res) => {
     LEFT JOIN users ru ON ru.id = r.resolved_by
     ${filter ? 'WHERE r.status = ?' : ''}
     ORDER BY r.created_at DESC LIMIT 100
-  `).all(...(filter ? [filter] : []));
+  `, ...(filter ? [filter] : []));
 
-  const openCount = db.prepare("SELECT COUNT(*) AS c FROM reports WHERE status = 'open'").get().c;
+  const openCount = (await get("SELECT COUNT(*) AS c FROM reports WHERE status = 'open'")).c;
   res.json({
     reports: rows.map((row) => ({ ...row, reason_label: REPORT_REASONS.get(row.reason) || row.reason })),
     openCount,
   });
-});
+}));
 
-router.patch('/reports/:id', requireRole('admin', 'editor'), (req, res) => {
-  const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(Number(req.params.id));
+router.patch('/reports/:id', requireRole('admin', 'editor'), asyncRoute(async (req, res) => {
+  const report = await get('SELECT * FROM reports WHERE id = ?', Number(req.params.id));
   if (!report) throw httpError(404, 'Không tìm thấy báo cáo này.');
 
   const status = String(req.body?.status || '');
   if (!['open', 'resolved'].includes(status)) throw httpError(400, 'Trạng thái không hợp lệ.');
 
-  db.prepare('UPDATE reports SET status = ?, resolved_by = ?, resolved_at = ? WHERE id = ?')
-    .run(status, status === 'resolved' ? req.user.id : null, status === 'resolved' ? nowIso() : null, report.id);
+  await run('UPDATE reports SET status = ?, resolved_by = ?, resolved_at = ? WHERE id = ?',
+    status, status === 'resolved' ? req.user.id : null, status === 'resolved' ? nowIso() : null, report.id);
 
   res.json({ ok: true });
-});
+}));
 
-router.get('/achievements/me', requireAuth, (req, res) => {
+router.get('/achievements/me', requireAuth, asyncRoute(async (req, res) => {
   const uid = req.user.id;
-  const one = (sql, ...params) => db.prepare(sql).get(...params).c;
+  const one = async (sql, ...params) => (await get(sql, ...params)).c;
 
-  const gameCount = one('SELECT COUNT(*) AS c FROM games WHERE created_by = ?', uid);
-  const ratingsGiven = one('SELECT COUNT(*) AS c FROM ratings WHERE user_id = ?', uid);
-  const commentsMade = one('SELECT COUNT(*) AS c FROM comments WHERE user_id = ?', uid);
-  const scoresMade = one('SELECT COUNT(*) AS c FROM scores WHERE user_id = ?', uid);
-  const likesReceived = one(
+  const gameCount = await one('SELECT COUNT(*) AS c FROM games WHERE created_by = ?', uid);
+  const ratingsGiven = await one('SELECT COUNT(*) AS c FROM ratings WHERE user_id = ?', uid);
+  const commentsMade = await one('SELECT COUNT(*) AS c FROM comments WHERE user_id = ?', uid);
+  const scoresMade = await one('SELECT COUNT(*) AS c FROM scores WHERE user_id = ?', uid);
+  const likesReceived = await one(
     'SELECT COUNT(*) AS c FROM likes l JOIN games g ON g.id = l.game_id WHERE g.created_by = ?',
     uid,
   );
 
-  const bestGame = db.prepare(`
+  const bestGame = await get(`
     SELECT g.title, g.slug, ROUND(AVG(r.value), 1) AS avg, COUNT(*) AS count
     FROM ratings r JOIN games g ON g.id = r.game_id
     WHERE g.created_by = ?
     GROUP BY g.id ORDER BY avg DESC, count DESC LIMIT 1
-  `).get(uid);
+  `, uid);
 
-  const top = db.prepare(`
+  const top = await get(`
     WITH best AS (
       SELECT user_id, MAX(value) AS value FROM scores GROUP BY user_id, game_id
     )
     SELECT user_id, COALESCE(SUM(value), 0) AS total
     FROM best GROUP BY user_id ORDER BY total DESC LIMIT 1
-  `).get();
+  `);
   const champion = Boolean(top && top.user_id === uid && top.total > 0);
 
   const achievements = [
@@ -167,6 +167,6 @@ router.get('/achievements/me', requireAuth, (req, res) => {
     bestGame: bestGame || null,
     stats: { gameCount, ratingsGiven, commentsMade, scoresMade, likesReceived },
   });
-});
+}));
 
 export default router;

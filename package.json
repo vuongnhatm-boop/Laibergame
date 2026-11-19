@@ -5,13 +5,14 @@
   "type": "module",
   "description": "Laiber — kho game của nhóm: đăng game bằng tên, thể loại và link, kèm bảng xếp hạng.",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server.js",
-    "dev": "node --watch --disable-warning=ExperimentalWarning server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "engines": {
-    "node": ">=22.5"
+    "node": "24.x"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "express": "^4.21.2",
     "multer": "^2.0.2"
   }

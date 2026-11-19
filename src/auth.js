@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db } from './db.js';
+import { get, run } from './db.js';
 
 export const SESSION_COOKIE = 'vault_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -16,21 +16,21 @@ function parseCookies(header = '') {
   return out;
 }
 
-export function sessionUser(req, res, next) {
+async function loadSessionUser(req) {
   req.user = null;
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  if (!token) return next();
+  if (!token) return;
 
-  const row = db.prepare(`
+  const row = await get(`
     SELECT s.token, s.expires_at, u.id, u.username, u.display_name, u.role, u.avatar_color, u.avatar_path, u.created_at
     FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token = ?
-  `).get(token);
+  `, token);
 
-  if (!row) return next();
+  if (!row) return;
   if (Date.parse(row.expires_at) < Date.now()) {
-    db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
-    return next();
+    await run('DELETE FROM sessions WHERE token = ?', token);
+    return;
   }
 
   req.user = {
@@ -42,22 +42,25 @@ export function sessionUser(req, res, next) {
     avatar_path: row.avatar_path,
     created_at: row.created_at,
   };
-  next();
 }
 
-export function createSession(res, userId) {
+export function sessionUser(req, res, next) {
+  loadSessionUser(req).then(() => next(), next);
+}
+
+export async function createSession(res, userId) {
   const token = crypto.randomBytes(32).toString('hex');
   const expires = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-  db.prepare('INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
-    .run(token, userId, expires, new Date().toISOString());
+  await run('INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)',
+    token, userId, expires, new Date().toISOString());
   res.setHeader('Set-Cookie',
     `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`);
   return token;
 }
 
-export function destroySession(req, res) {
+export async function destroySession(req, res) {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+  if (token) await run('DELETE FROM sessions WHERE token = ?', token);
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 

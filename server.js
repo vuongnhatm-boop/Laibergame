@@ -1,6 +1,6 @@
 import express from 'express';
 import path from 'node:path';
-import { db, ROOT, COVER_DIR, AVATAR_DIR } from './src/db.js';
+import { ready, get, usingRemoteDb, ROOT, COVER_DIR, AVATAR_DIR } from './src/db.js';
 import { sessionUser } from './src/auth.js';
 import authRoutes from './src/routes/auth.js';
 import gameRoutes from './src/routes/games.js';
@@ -48,6 +48,10 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '200kb' }));
 app.use(express.urlencoded({ extended: false, limit: '200kb' }));
 
+app.use((req, res, next) => {
+  ready().then(() => next(), next);
+});
+
 app.use(sessionUser);
 
 app.use('/covers', express.static(COVER_DIR, { maxAge: '7d', fallthrough: true, index: false }));
@@ -82,13 +86,18 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: status >= 500 ? 'Lỗi máy chủ, vui lòng thử lại.' : err.message });
 });
 
-const PORT = Number(process.env.PORT) || 4321;
-const HOST = process.env.HOST || '0.0.0.0';
+if (!process.env.VERCEL) {
+  const PORT = Number(process.env.PORT) || 4321;
+  const HOST = process.env.HOST || '0.0.0.0';
 
-app.listen(PORT, HOST, () => {
-  const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-  console.log(`\n  Laiber đang chạy: http://localhost:${PORT}`);
-  console.log(`  Database: ${path.join(ROOT, 'data', 'vault.db')}`);
-  if (count === 0) console.log('  Chưa có tài khoản — người đăng ký đầu tiên sẽ là quản trị viên.');
-  console.log('');
-});
+  app.listen(PORT, HOST, () => {
+    console.log(`\n  Laiber đang chạy: http://localhost:${PORT}`);
+    console.log(`  Database: ${usingRemoteDb ? 'Turso (remote)' : path.join(ROOT, 'data', 'vault.db')}`);
+    get('SELECT COUNT(*) AS c FROM users').then((row) => {
+      if (row.c === 0) console.log('  Chưa có tài khoản — người đăng ký đầu tiên sẽ là quản trị viên.');
+      console.log('');
+    });
+  });
+}
+
+export default app;

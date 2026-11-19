@@ -35,14 +35,13 @@ export function slugify(input) {
     .slice(0, 60);
 }
 
-export function uniqueSlug(db, table, value, excludeId = null) {
+export async function uniqueSlug(getRow, table, value, excludeId = null) {
   const base = slugify(value) || 'game';
   let slug = base;
   let i = 2;
   const sql = `SELECT 1 AS hit FROM ${table} WHERE slug = ?${excludeId ? ' AND id <> ?' : ''}`;
-  const stmt = db.prepare(sql);
   for (;;) {
-    const row = excludeId ? stmt.get(slug, excludeId) : stmt.get(slug);
+    const row = excludeId ? await getRow(sql, slug, excludeId) : await getRow(sql, slug);
     if (!row) return slug;
     slug = `${base}-${i++}`;
   }

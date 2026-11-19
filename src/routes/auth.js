@@ -3,7 +3,7 @@ import multer from 'multer';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, AVATAR_DIR } from '../db.js';
+import { get, run, AVATAR_DIR } from '../db.js';
 import { createSession, destroySession, requireAuth } from '../auth.js';
 import { hashPassword, verifyPassword, pickColor, nowIso, clampText, rateLimiter, httpError, asyncRoute } from '../util.js';
 import { uploadImage } from '../cloudinary.js';
@@ -34,23 +34,24 @@ function removeAvatarFile(avatarPath) {
   if (abs.startsWith(AVATAR_DIR + path.sep)) fs.rm(abs, { force: true }, () => {});
 }
 
-function adminCount() {
-  return db.prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").get().c;
+async function adminCount() {
+  const row = await get("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'");
+  return row.c;
 }
 
 function publicUser(id) {
-  return db.prepare('SELECT id, username, display_name, role, avatar_color, avatar_path, created_at FROM users WHERE id = ?').get(id);
+  return get('SELECT id, username, display_name, role, avatar_color, avatar_path, created_at FROM users WHERE id = ?', id);
 }
 
-router.get('/state', (req, res) => {
-  res.json({ needsSetup: adminCount() === 0 });
-});
+router.get('/state', asyncRoute(async (req, res) => {
+  res.json({ needsSetup: (await adminCount()) === 0 });
+}));
 
 router.get('/me', (req, res) => {
   res.json({ user: req.user });
 });
 
-router.post('/register', (req, res) => {
+router.post('/register', asyncRoute(async (req, res) => {
   if (!registerLimit(req.ip)) throw httpError(429, 'Bạn thử quá nhiều lần, vui lòng chờ vài phút.');
 
   const username = clampText(req.body?.username, 24).toLowerCase();
@@ -63,65 +64,65 @@ router.post('/register', (req, res) => {
   if (displayName.length < 1) throw httpError(400, 'Vui lòng nhập tên hiển thị.');
   if (password.length < 6) throw httpError(400, 'Mật khẩu cần ít nhất 6 ký tự.');
 
-  const exists = db.prepare('SELECT 1 AS hit FROM users WHERE username = ?').get(username);
+  const exists = await get('SELECT 1 AS hit FROM users WHERE username = ?', username);
   if (exists) throw httpError(409, 'Tên đăng nhập này đã có người dùng.');
 
-  const isFirstAdmin = adminCount() === 0;
+  const isFirstAdmin = (await adminCount()) === 0;
   const role = isFirstAdmin ? 'admin' : 'member';
   const { hash, salt } = hashPassword(password);
 
-  const info = db.prepare(`
+  const info = await run(`
     INSERT INTO users (username, display_name, password_hash, salt, role, avatar_color, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(username, displayName, hash, salt, role, pickColor(username), nowIso());
+  `, username, displayName, hash, salt, role, pickColor(username), nowIso());
 
-  createSession(res, Number(info.lastInsertRowid));
-  res.status(201).json({ user: publicUser(Number(info.lastInsertRowid)), wasSetup: isFirstAdmin });
-});
+  await createSession(res, info.lastInsertRowid);
+  res.status(201).json({ user: await publicUser(info.lastInsertRowid), wasSetup: isFirstAdmin });
+}));
 
-router.post('/login', (req, res) => {
+router.post('/login', asyncRoute(async (req, res) => {
   const key = `login:${req.ip}`;
   if (!loginLimit(key)) throw httpError(429, 'Sai quá nhiều lần, vui lòng chờ vài phút rồi thử lại.');
 
   const username = clampText(req.body?.username, 24).toLowerCase();
   const password = String(req.body?.password ?? '');
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  const user = await get('SELECT * FROM users WHERE username = ?', username);
 
   if (!user || !verifyPassword(password, user.salt, user.password_hash)) {
     throw httpError(401, 'Tên đăng nhập hoặc mật khẩu không đúng.');
   }
 
-  createSession(res, user.id);
-  res.json({ user: publicUser(user.id) });
-});
+  await createSession(res, user.id);
+  res.json({ user: await publicUser(user.id) });
+}));
 
-router.post('/logout', (req, res) => {
-  destroySession(req, res);
+router.post('/logout', asyncRoute(async (req, res) => {
+  await destroySession(req, res);
   res.json({ ok: true });
-});
+}));
 
-router.patch('/me', requireAuth, (req, res) => {
+router.patch('/me', requireAuth, asyncRoute(async (req, res) => {
   const displayName = req.body?.displayName === undefined ? null : clampText(req.body.displayName, 40);
   const currentPassword = String(req.body?.currentPassword ?? '');
   const newPassword = String(req.body?.newPassword ?? '');
 
   if (displayName !== null) {
     if (!displayName) throw httpError(400, 'Tên hiển thị không được để trống.');
-    db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, req.user.id);
+    await run('UPDATE users SET display_name = ? WHERE id = ?', displayName, req.user.id);
   }
 
   if (newPassword) {
     if (newPassword.length < 6) throw httpError(400, 'Mật khẩu mới cần ít nhất 6 ký tự.');
-    const row = db.prepare('SELECT password_hash, salt FROM users WHERE id = ?').get(req.user.id);
+    const row = await get('SELECT password_hash, salt FROM users WHERE id = ?', req.user.id);
     if (!verifyPassword(currentPassword, row.salt, row.password_hash)) {
       throw httpError(400, 'Mật khẩu hiện tại không đúng.');
     }
     const { hash, salt } = hashPassword(newPassword);
-    db.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?').run(hash, salt, req.user.id);
+    await run('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?', hash, salt, req.user.id);
   }
 
-  res.json({ user: publicUser(req.user.id) });
-});
+  res.json({ user: await publicUser(req.user.id) });
+}));
 
 router.post('/avatar', requireAuth, avatarUpload.single('avatar'), asyncRoute(async (req, res) => {
   const file = req.file;
@@ -132,22 +133,22 @@ router.post('/avatar', requireAuth, avatarUpload.single('avatar'), asyncRoute(as
     const stored = remoteUrl || `/avatars/${path.basename(file.path)}`;
     if (remoteUrl) fs.rm(file.path, { force: true }, () => {});
 
-    const current = db.prepare('SELECT avatar_path FROM users WHERE id = ?').get(req.user.id);
-    db.prepare('UPDATE users SET avatar_path = ? WHERE id = ?').run(stored, req.user.id);
+    const current = await get('SELECT avatar_path FROM users WHERE id = ?', req.user.id);
+    await run('UPDATE users SET avatar_path = ? WHERE id = ?', stored, req.user.id);
     removeAvatarFile(current?.avatar_path);
 
-    res.json({ user: publicUser(req.user.id) });
+    res.json({ user: await publicUser(req.user.id) });
   } catch (err) {
     if (file) fs.rm(file.path, { force: true }, () => {});
     throw err;
   }
 }));
 
-router.delete('/avatar', requireAuth, (req, res) => {
-  const current = db.prepare('SELECT avatar_path FROM users WHERE id = ?').get(req.user.id);
-  db.prepare('UPDATE users SET avatar_path = NULL WHERE id = ?').run(req.user.id);
+router.delete('/avatar', requireAuth, asyncRoute(async (req, res) => {
+  const current = await get('SELECT avatar_path FROM users WHERE id = ?', req.user.id);
+  await run('UPDATE users SET avatar_path = NULL WHERE id = ?', req.user.id);
   removeAvatarFile(current?.avatar_path);
-  res.json({ user: publicUser(req.user.id) });
-});
+  res.json({ user: await publicUser(req.user.id) });
+}));
 
 export default router;
