@@ -1,0 +1,10 @@
+node_modules/
+data/
+uploads/
+.shots/
+.npm-cache/
+.env
+.env.*
+.cloudinary.local.json
+*.log
+.DS_Store

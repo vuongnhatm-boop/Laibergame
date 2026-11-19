@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07080b" />
+  <title>Laiber — Kho game của nhóm</title>
+  <meta name="description" content="Laiber — đăng game bằng tên, thể loại và link. Ảnh minh hoạ tự lấy từ trang game, chơi nhúng ngay trên web." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+  <script src="/js/theme.js"></script>
+</head>
+<body>
+  <div class="bg-layer" aria-hidden="true">
+    <span class="orb orb-a"></span>
+    <span class="orb orb-b"></span>
+    <span class="orb orb-c"></span>
+    <span class="grid-veil"></span>
+  </div>
+
+  <header id="site-header" class="site-header"></header>
+
+  <main id="app" class="app-main"></main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <span class="footer-brand">Laiber — kho lưu trữ game nội bộ</span>
+      <span class="footer-meta">Node · SQLite · tự lưu trên máy của bạn</span>
+    </div>
+  </footer>
+
+  <div id="modal-root"></div>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
