@@ -23,7 +23,7 @@ Mở http://localhost:4321. Người **đăng ký đầu tiên** tự động l�
 
 ## Cấu hình Cloudinary
 
-Mặc định đã trỏ tới environment của dự án (`dhdo5and` / preset `Laibergame`). Có thể ghi đè bằng biến môi trường:
+Tạo file `.env` ở thư mục gốc (đã gitignore) dựa trên `.env.example`:
 
 ```
 CLOUDINARY_CLOUD_NAME=...
@@ -31,7 +31,7 @@ CLOUDINARY_UPLOAD_PRESET=...
 CLOUDINARY_API_KEY=...
 ```
 
-Nếu Cloudinary không phản hồi, ảnh vẫn được lưu vào `uploads/covers` và `uploads/avatars`.
+`CLOUDINARY_UPLOAD_PRESET` phải là preset **Unsigned** trong Cloudinary Console. Không có `.env` thì web vẫn chạy, ảnh lưu vào `uploads/covers` và `uploads/avatars`.
 
 ## Cấu trúc
 

@@ -5,6 +5,7 @@ uploads/
 .npm-cache/
 .env
 .env.*
+!.env.example
 .cloudinary.local.json
 *.log
 .DS_Store

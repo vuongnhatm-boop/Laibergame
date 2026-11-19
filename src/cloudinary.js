@@ -1,9 +1,14 @@
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || 'dhdo5and';
-const UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET || 'Laibergame';
-const API_KEY = process.env.CLOUDINARY_API_KEY || '163579968295293';
+const envFile = fileURLToPath(new URL('../.env', import.meta.url));
+if (existsSync(envFile)) process.loadEnvFile(envFile);
+
+const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || '';
+const UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET || '';
+const API_KEY = process.env.CLOUDINARY_API_KEY || '';
 
 export const cloudinaryEnabled = Boolean(CLOUD_NAME && UPLOAD_PRESET && API_KEY);
 
