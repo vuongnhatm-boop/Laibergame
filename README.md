@@ -2,6 +2,8 @@
 
 Web lưu trữ game nội bộ: đăng game bằng tên + thể loại + link, chấm sao, bình luận, báo lỗi, bảng xếp hạng, thành tích và ảnh đại diện.
 
+App nằm trong thư mục **`Laiber/`** — đây cũng là **Root Directory** đã đặt trong project Vercel, nên mọi lệnh chạy local đều thực hiện bên trong thư mục này.
+
 ## Công nghệ
 
 - Node.js + Express 4
@@ -12,6 +14,7 @@ Web lưu trữ game nội bộ: đăng game bằng tên + thể loại + link, c
 ## Chạy local
 
 ```bash
+cd Laiber
 npm install
 npm start
 ```
@@ -23,7 +26,7 @@ Mở http://localhost:4321. Người **đăng ký đầu tiên** tự động l�
 
 ## Cấu hình
 
-Tạo file `.env` ở thư mục gốc (đã gitignore) dựa trên `.env.example`:
+Tạo file `.env` trong `Laiber/` (đã gitignore) dựa trên `Laiber/.env.example`:
 
 ```
 TURSO_DATABASE_URL=libsql://...   # chỉ cần khi deploy
@@ -37,7 +40,7 @@ CLOUDINARY_API_KEY=...
 
 ## Triển khai Vercel
 
-Repo đã có `vercel.json` và `api/index.js`, chỉ cần thêm biến môi trường trong **Project → Settings → Environment Variables**:
+Repo đã có `vercel.json` và `api/index.js` trong `Laiber/`. Project Vercel đặt **Root Directory = `Laiber`**, nên đừng di chuyển app ra khỏi thư mục này. Chỉ cần thêm biến môi trường trong **Project → Settings → Environment Variables**:
 
 | Biến | Nguồn |
 | --- | --- |
@@ -56,16 +59,19 @@ Lưu ý:
 ## Cấu trúc
 
 ```
-server.js            Express app (không listen khi chạy trên Vercel)
-api/index.js         entry cho Vercel
-vercel.json          route mọi request vào function
-src/db.js            kết nối libSQL (file local hoặc Turso) + schema
-src/auth.js          session, phân quyền
-src/cloudinary.js    upload ảnh lên Cloudinary
-src/routes/          auth, games, scores, social, admin, preview
-public/              SPA (index.html, css, js)
-data/                database local (không commit)
-uploads/             file tạm/ảnh local (không commit)
+README.md            tài liệu này
+Laiber/              toàn bộ app (Root Directory của Vercel)
+  server.js          Express app (không listen khi chạy trên Vercel)
+  api/index.js       entry cho Vercel
+  vercel.json        route mọi request vào function
+  package.json
+  src/db.js          kết nối libSQL (file local hoặc Turso) + schema
+  src/auth.js        session, phân quyền
+  src/cloudinary.js  upload ảnh lên Cloudinary
+  src/routes/        auth, games, scores, social, admin, preview
+  public/            SPA (index.html, css, js)
+  data/              database local (không commit)
+  uploads/           file tạm/ảnh local (không commit)
 ```
 
 ## Ghi chú
