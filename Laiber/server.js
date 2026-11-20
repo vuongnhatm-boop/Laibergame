@@ -58,6 +58,12 @@ app.use('/covers', express.static(COVER_DIR, { maxAge: '7d', fallthrough: true, 
 app.use('/avatars', express.static(AVATAR_DIR, { maxAge: '7d', fallthrough: true, index: false }));
 app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
 
+app.get('/', (req, res) => {
+  res.sendFile(path.join(ROOT, 'public', 'index.html'), (err) => {
+    if (err && !res.headersSent) res.redirect(302, '/index.html');
+  });
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api', gameRoutes);
 app.use('/api', scoreRoutes);
