@@ -165,6 +165,10 @@ function canManage() {
   return Boolean(state.me && ['admin', 'editor'].includes(state.me.role));
 }
 
+function canEditGame(game) {
+  return canManage() || Boolean(state.me && game.created_by === state.me.id);
+}
+
 function currentTheme() {
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
 }
@@ -216,6 +220,7 @@ function renderHeader() {
     ['#/submit', 'Đăng game'],
     ['#/leaderboard', 'Bảng xếp hạng'],
   ];
+  if (state.me) items.push(['#/my-games', 'Game của tôi']);
   if (canManage()) items.push(['#/admin', 'Quản trị']);
 
   const nav = items
@@ -240,6 +245,7 @@ function renderHeader() {
              <span>@${esc(me.username)} · ${ROLE_LABEL[me.role] || me.role}</span>
            </div>
            <button class="menu-item" data-action="profile">${icon('key', 15)} Hồ sơ & mật khẩu</button>
+           <a class="menu-item" href="#/my-games">${icon('gamepad', 15)} Game của tôi</a>
            ${canManage() ? `<a class="menu-item" href="#/admin">${icon('shield', 15)} Quản trị</a>` : ''}
            <button class="menu-item danger" data-action="logout">${icon('logout', 15)} Đăng xuất</button>
          </div>
@@ -534,6 +540,83 @@ async function loadGames() {
   }
 }
 
+async function renderMyGames() {
+  if (!state.me) {
+    appRoot().innerHTML = `<div class="wrap">${authPrompt('Đăng nhập để theo dõi tiến độ game của bạn.')}</div>`;
+    return;
+  }
+
+  setLoading();
+  document.title = 'Game của tôi — Laiber';
+
+  let data;
+  try {
+    data = await api('/api/games/mine');
+  } catch (err) {
+    appRoot().innerHTML = `<div class="wrap">${errorState(err.message)}</div>`;
+    return;
+  }
+
+  const { games, summary } = data;
+  const rows = games.map((g) => {
+    const st = STATUS[g.status] || STATUS.in_progress;
+    const hasRating = Number(g.rating_count) > 0;
+    const note = String(g.latest_note || '').trim();
+    return `<div class="mygame-row">
+      <a class="mygame-thumb" href="#/games/${encodeURIComponent(g.slug)}" aria-hidden="true">${coverInner(g)}</a>
+      <div class="mygame-main">
+        <div class="mygame-title">
+          <a href="#/games/${encodeURIComponent(g.slug)}">${esc(g.title)}</a>
+          <span class="status ${st.cls}">${st.label}</span>
+        </div>
+        ${g.tagline ? `<p class="mygame-tagline">${esc(g.tagline)}</p>` : ''}
+        <div class="mygame-meta">
+          <span>v${esc(g.version)}</span>
+          <span>${hasRating ? `${icon('star', 12)} ${fmt(g.rating_avg)} · ${fmtInt(g.rating_count)} lượt` : 'Chưa có đánh giá'}</span>
+          <span>${icon('message', 12)} ${fmtInt(g.comment_count)}</span>
+          <span>${icon('download', 12)} ${fmtInt(g.downloads)}</span>
+          <span>${icon('clock', 12)} ${ago(g.updated_at)}</span>
+        </div>
+        ${note ? `<p class="mygame-note">${icon('layers', 12)} v${esc(g.latest_version || g.version)} — ${esc(note.length > 140 ? `${note.slice(0, 140)}…` : note)}</p>` : ''}
+      </div>
+      <div class="mygame-actions">
+        <a class="btn btn-ghost btn-sm" href="#/games/${encodeURIComponent(g.slug)}">Xem</a>
+        <button class="btn btn-ghost btn-sm" type="button" data-action="edit-game" data-slug="${esc(g.slug)}">${icon('edit', 13)} Cập nhật</button>
+        <button class="btn btn-ghost btn-sm" type="button" data-action="add-version" data-id="${g.id}" data-slug="${esc(g.slug)}" data-version="${esc(g.version)}">${icon('plus', 13)} Bản mới</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  appRoot().innerHTML = `<div class="wrap rise">
+    <div class="section-head" style="margin-top:32px">
+      <div>
+        <h1 style="font-size:30px">Game của tôi</h1>
+        <p class="subtle" style="margin:6px 0 0">Theo dõi trạng thái, phiên bản và phản hồi của những game bạn đã đăng.</p>
+      </div>
+      <a class="btn btn-primary btn-sm" href="#/submit">${icon('plus', 15)} Đăng game</a>
+    </div>
+
+    <div class="mini-stat-grid" style="margin-top:22px">
+      <div class="mini-stat"><div class="v">${fmtInt(summary.total)}</div><div class="l">Tổng game</div></div>
+      <div class="mini-stat"><div class="v">${fmtInt(summary.in_progress)}</div><div class="l">Đang phát triển</div></div>
+      <div class="mini-stat"><div class="v">${fmtInt(summary.done)}</div><div class="l">Hoàn thành</div></div>
+      <div class="mini-stat"><div class="v">${fmtInt(summary.abandoned)}</div><div class="l">Tạm dừng</div></div>
+    </div>
+
+    <div class="panel" style="margin-top:18px">
+      <div class="panel-title">
+        <h3>${icon('layers', 16)} Tiến độ game</h3>
+        <span class="subtle">${summary.total} game</span>
+      </div>
+      ${games.length ? `<div class="mygame-list">${rows}</div>` : emptyState({
+        title: 'Bạn chưa đăng game nào',
+        body: 'Đăng game đầu tiên để theo dõi tiến độ, nhận đánh giá và bình luận tại đây.',
+        cta: '<a class="btn btn-primary btn-sm" href="#/submit">Đăng game</a>',
+      })}
+    </div>
+  </div>`;
+}
+
 function versionHtml(v, game) {
   return `<div class="tl-item">
     <div class="tl-head">
@@ -667,7 +750,7 @@ function drawGame(data) {
           </button>
           <span style="flex:1"></span>
           <button class="btn btn-ghost btn-sm" data-action="report" data-id="${game.id}" data-title="${esc(game.title)}">${icon('flag', 14)} Báo lỗi</button>
-          ${canManage() ? `<button class="btn btn-ghost btn-sm" data-action="edit-game" data-slug="${esc(game.slug)}">${icon('edit', 15)} Chỉnh sửa</button>` : ''}
+          ${canEditGame(game) ? `<button class="btn btn-ghost btn-sm" data-action="edit-game" data-slug="${esc(game.slug)}">${icon('edit', 15)} Chỉnh sửa</button>` : ''}
           ${isAdmin() ? `<button class="icon-btn danger" data-action="delete-game" data-id="${game.id}" data-title="${esc(game.title)}" title="Xoá game">${icon('trash', 16)}</button>` : ''}
         </div>
       </div>
@@ -692,7 +775,7 @@ function drawGame(data) {
         <div class="panel">
           <div class="panel-title">
             <h3>${icon('layers', 16)} Nhật ký cập nhật</h3>
-            ${canManage() ? `<button class="btn btn-ghost btn-sm" data-action="add-version" data-id="${game.id}" data-slug="${esc(game.slug)}" data-version="${esc(game.version)}">${icon('plus', 14)} Thêm bản</button>` : ''}
+            ${canEditGame(game) ? `<button class="btn btn-ghost btn-sm" data-action="add-version" data-id="${game.id}" data-slug="${esc(game.slug)}" data-version="${esc(game.version)}">${icon('plus', 14)} Thêm bản</button>` : ''}
           </div>
           ${versions.length
             ? `<div class="timeline">${versions.map((v) => versionHtml(v, game)).join('')}</div>`
@@ -1540,6 +1623,10 @@ async function renderRoute() {
     window.scrollTo(0, 0);
     return renderLeaderboard();
   }
+  if (segments[0] === 'my-games') {
+    window.scrollTo(0, 0);
+    return renderMyGames();
+  }
   if (segments[0] === 'admin') {
     window.scrollTo(0, 0);
     return renderAdmin();
@@ -1949,6 +2036,7 @@ document.addEventListener('submit', async (event) => {
       });
       closeModal();
       toast(isEdit ? 'Đã lưu thay đổi.' : 'Đã thêm game mới.');
+      if (location.hash.startsWith('#/my-games')) return renderRoute();
       go(`#/games/${encodeURIComponent(res.game.slug)}`);
       return;
     }
@@ -1964,6 +2052,7 @@ document.addEventListener('submit', async (event) => {
       await api(`/api/games/${form.dataset.id}/versions`, { method: 'POST', body });
       closeModal();
       toast('Đã lưu bản cập nhật.');
+      if (location.hash.startsWith('#/my-games')) return renderRoute();
       renderGame(form.dataset.slug, { silent: true, scroll: window.scrollY });
       return;
     }

@@ -166,6 +166,28 @@ router.get('/games', asyncRoute(async (req, res) => {
   res.json({ games: await all(sql, ...params) });
 }));
 
+router.get('/games/mine', requireAuth, asyncRoute(async (req, res) => {
+  const games = await all(`
+    SELECT m.*,
+      (SELECT v.version FROM game_versions v WHERE v.game_id = m.id ORDER BY v.created_at DESC LIMIT 1) AS latest_version,
+      (SELECT v.notes FROM game_versions v WHERE v.game_id = m.id ORDER BY v.created_at DESC LIMIT 1) AS latest_note,
+      (SELECT v.created_at FROM game_versions v WHERE v.game_id = m.id ORDER BY v.created_at DESC LIMIT 1) AS latest_version_at
+    FROM (${LIST_SELECT} WHERE g.created_by = ?) m
+    ORDER BY m.updated_at DESC
+  `, req.user.id);
+
+  const count = (status) => games.filter((game) => game.status === status).length;
+  res.json({
+    games,
+    summary: {
+      total: games.length,
+      in_progress: count('in_progress'),
+      done: count('done'),
+      abandoned: count('abandoned'),
+    },
+  });
+}));
+
 router.get('/games/:slug', asyncRoute(async (req, res) => {
   const game = await get(`${LIST_SELECT} WHERE g.slug = ?`, String(req.params.slug));
   if (!game) throw httpError(404, 'Không tìm thấy game này.');
@@ -343,13 +365,17 @@ router.post('/games', requireRole('admin', 'editor'),
     }
   }));
 
-router.patch('/games/:id', requireRole('admin', 'editor'),
+router.patch('/games/:id', requireAuth,
   upload.fields([{ name: 'cover', maxCount: 1 }, { name: 'file', maxCount: 1 }]),
   asyncRoute(async (req, res) => {
     const files = req.files || {};
     try {
       const game = await get('SELECT * FROM games WHERE id = ?', Number(req.params.id));
       if (!game) throw httpError(404, 'Không tìm thấy game này.');
+      const isManager = ['admin', 'editor'].includes(req.user.role);
+      if (!isManager && game.created_by !== req.user.id) {
+        throw httpError(403, 'Bạn chỉ có thể chỉnh sửa game do mình đăng.');
+      }
 
       const updates = {};
       const has = (key) => Object.prototype.hasOwnProperty.call(req.body, key);
@@ -466,11 +492,15 @@ router.post('/games/:id/like', requireAuth, asyncRoute(async (req, res) => {
   res.json({ liked: !existing, likes });
 }));
 
-router.post('/games/:id/versions', requireRole('admin', 'editor'), uploadOne.single('file'), asyncRoute(async (req, res) => {
+router.post('/games/:id/versions', requireAuth, uploadOne.single('file'), asyncRoute(async (req, res) => {
   const file = req.file || null;
   try {
-    const game = await get('SELECT id, title FROM games WHERE id = ?', Number(req.params.id));
+    const game = await get('SELECT id, title, created_by FROM games WHERE id = ?', Number(req.params.id));
     if (!game) throw httpError(404, 'Không tìm thấy game này.');
+    const isManager = ['admin', 'editor'].includes(req.user.role);
+    if (!isManager && game.created_by !== req.user.id) {
+      throw httpError(403, 'Bạn chỉ có thể cập nhật bản mới cho game do mình đăng.');
+    }
 
     const version = clampText(req.body.version, 24);
     const notes = clampText(req.body.notes, 3000);
